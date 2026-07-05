@@ -1,3 +1,14 @@
-from django.contrib import admin
+from django.contrib.gis import admin
 
-# Register your models here.
+from .models import Route, RouteStop
+
+
+class RouteStopInline(admin.TabularInline):
+    model = RouteStop
+    extra = 1
+
+
+@admin.register(Route)
+class RouteAdmin(admin.GISModelAdmin):
+    list_display = ('name', 'user', 'cyclic', 'created_at')
+    inlines = [RouteStopInline]
