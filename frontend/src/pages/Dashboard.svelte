@@ -8,6 +8,7 @@
   let mapContainer: HTMLDivElement;
   let map: maplibregl.Map;
   let selectedPark: { name: string; state: string; code: string; description: string } | null = null;
+  let isLoading = true;
 
   // Route builder state
   let startLocation = '';
@@ -31,7 +32,7 @@
   onMount(async () => {
     map = new maplibregl.Map({
       container: mapContainer,
-      style: 'https://tiles.openfreemap.org/styles/positron',
+      style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
       center: [-98.5, 39.8],
       zoom: 3.3,
       attributionControl: false,
@@ -40,12 +41,27 @@
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
 
     map.on('load', async () => {
-      const [pointsRes, boundariesRes] = await Promise.all([
+      const [pointsRes, boundariesRes, statesRes] = await Promise.all([
         fetch('http://localhost:8000/api/attractions/parks/'),
         fetch('http://localhost:8000/api/attractions/parks/boundaries/'),
+        fetch('https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_1_states_provinces.geojson'),
       ]);
       const pointsGeojson = await pointsRes.json();
       const boundariesGeojson = await boundariesRes.json();
+      // const statesGeojson = await statesRes.json();
+
+      // // State/province borders — add first so everything else renders on top
+      // map.addSource('states', { type: 'geojson', data: statesGeojson });
+
+      // map.addLayer({
+      //   id: 'state-borders',
+      //   type: 'line',
+      //   source: 'states',
+      //   paint: {
+      //     'line-color': '#666666',
+      //     'line-width': 1,
+      //   },
+      // });
 
       map.addSource('park-boundaries', { type: 'geojson', data: boundariesGeojson });
 
@@ -55,8 +71,8 @@
         source: 'park-boundaries',
         minzoom: 6,
         paint: {
-          'fill-color': '#2d7d46',
-          'fill-opacity': 0.15,
+          'fill-color': '#a8d5a8',  // lighter, brighter green
+          'fill-opacity': 0.35,      // slightly more opaque
         },
       });
 
@@ -66,8 +82,8 @@
         source: 'park-boundaries',
         minzoom: 6,
         paint: {
-          'line-color': '#2d7d46',
-          'line-width': 1.5,
+          'line-color': '#4a9d4a',   // darker, saturated green
+          'line-width': 2,           // slightly thicker
         },
       });
 
@@ -104,6 +120,8 @@
       map.on('mouseleave', 'park-points', () => (map.getCanvas().style.cursor = ''));
       map.on('mouseenter', 'park-boundaries-fill', () => (map.getCanvas().style.cursor = 'pointer'));
       map.on('mouseleave', 'park-boundaries-fill', () => (map.getCanvas().style.cursor = ''));
+
+      isLoading = false;
     });
   });
   
@@ -118,6 +136,13 @@
     selectedPark = null;
   }
 </script>
+
+{#if isLoading}
+  <div class="loading-overlay">
+    <div class="spinner"></div>
+    <p>Loading parks...</p>
+  </div>
+{/if}
 
 <div class="dashboard">
   <div bind:this={mapContainer} class="map"></div>
@@ -384,5 +409,35 @@
   .logout-btn:hover {
     background: #f4f1ea;
     color: #2a2a28;
+  }
+
+  .loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.95);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+
+  .spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid #e8e6e1;
+    border-top-color: #1f4d3a;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .loading-overlay p {
+    margin-top: 16px;
+    color: #7a7568;
+    font-family: system-ui;
   }
 </style>
