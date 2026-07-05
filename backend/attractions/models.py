@@ -12,7 +12,7 @@ class Attraction(models.Model):
 
 
 class NationalPark(Attraction):
-    polygon = models.MultiPolygonField(geography=True)
+    polygon = models.MultiPolygonField(geography=True, null=True, blank=True)
     state = models.CharField(max_length=2)
     code = models.CharField(max_length=10, unique=True)  # NPS park code, e.g. "yell"
 
