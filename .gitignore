@@ -1,0 +1,6 @@
+backend/osrm-data/*.osm.pbf
+backend/osrm-data/*.osrm*
+backend/.env
+frontend/node_modules/
+**/__pycache__/
+*.pyc
