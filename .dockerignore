@@ -1,4 +1,7 @@
 ﻿frontend/node_modules
+backend/osrm-data
 backend/__pycache__
+backend/**/__pycache__
+backend/db.sqlite3
 **/*.pyc
 .git
