@@ -3,13 +3,13 @@ import { writable } from 'svelte/store';
 const API_BASE = 'http://localhost:8000/api';
 
 export const accessToken = writable<string | null>(null);
-export const currentUser = writable<{ id: number; username: string; email: string; name: string } | null>(null);
+export const currentUser = writable<{ id: number; email: string; first_name: string; last_name: string } | null>(null);
 
-export async function register(username: string, email: string, password: string, name: string) {
+export async function register(email: string, password: string, firstName: string, lastName: string) {
   const res = await fetch(`${API_BASE}/users/register/`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, email, password, name }),
+    body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -18,11 +18,11 @@ export async function register(username: string, email: string, password: string
   return res.json();
 }
 
-export async function login(username: string, password: string) {
+export async function login(email: string, password: string) {
   const res = await fetch(`${API_BASE}/token/`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email, password }),
   });
   if (!res.ok) throw new Error('Invalid credentials');
   const data = await res.json();

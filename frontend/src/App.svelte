@@ -14,7 +14,7 @@
 
 <div class="app-shell">
   <header class="app-header">
-    <span class="logo">Roadtrip Planner</span>
+    <img src="/logo.png" alt="Roadtrip Planner" class="logo-img" />
   </header>
   <main class="app-content">
     <Router {routes} />
@@ -56,5 +56,10 @@
     flex: 1 1 auto;
     min-height: 0;
     position: relative;
+  }
+
+  .logo-img {
+    height: 40px;
+    width: auto;
   }
 </style>

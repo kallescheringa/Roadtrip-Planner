@@ -192,8 +192,8 @@
   <div class="user-card">
     {#if $currentUser}
       <div class="user-info">
-        <span class="avatar">{$currentUser.username[0].toUpperCase()}</span>
-        <span class="username">{$currentUser.username}</span>
+        <span class="avatar">{$currentUser.first_name?.[0]?.toUpperCase() || 'U'}</span>
+        <span class="username">{$currentUser.first_name}</span>
       </div>
     {/if}
     <button class="logout-btn" on:click={handleLogout}>Log out</button>
