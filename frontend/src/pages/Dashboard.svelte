@@ -9,10 +9,25 @@
 
   const API = 'http://localhost:8000';
 
+  type Park = { name: string; state: string; code: string; description: string };
+  type NearbyPark = {
+    id: number;
+    name: string;
+    code: string;
+    state: string;
+    distance_miles: number;
+    lat: number;
+    lon: number;
+    distance_is_approximate: boolean;
+  };
+
   let mapContainer: HTMLDivElement;
   let map: maplibregl.Map;
-  let selectedPark: { name: string; state: string; code: string; description: string } | null = null;
+  let selectedPark: Park | null = null;
   let isLoading = true;
+
+  // Full park properties (incl. description), keyed by park code.
+  let parkProps: Record<string, Park> = {};
 
   const generateId = () => Math.random().toString(36).substring(2, 9);
 
@@ -41,13 +56,43 @@
     }
   }
 
-  let routeGeojson: any = null;
-  let nearbyParks: any[] = [];
+  let nearbyParks: NearbyPark[] = [];
+  let hasPlanned = false;
   let isPlanning = false;
   let routeError = '';
 
   function handleDnd(event: any) {
     routePoints = event.detail.items;
+  }
+
+  function updateNearbyLayer() {
+    const src = map?.getSource('nearby-parks') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    src.setData({
+      type: 'FeatureCollection',
+      features: nearbyParks.map((p) => ({
+        type: 'Feature',
+        properties: { code: p.code, name: p.name, state: p.state },
+        geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+      })),
+    });
+  }
+
+  function openPark(code: string, fallback?: NearbyPark) {
+    selectedPark =
+      parkProps[code] ??
+      (fallback
+        ? { name: fallback.name, state: fallback.state, code: fallback.code, description: '' }
+        : null);
+  }
+
+  function selectNearbyPark(p: NearbyPark) {
+    openPark(p.code, p);
+    map.flyTo({
+      center: [p.lon, p.lat],
+      zoom: Math.max(map.getZoom(), 7),
+      duration: 600,
+    });
   }
 
   async function planRoute() {
@@ -80,21 +125,26 @@
       }
 
       const data = await res.json();
-      nearbyParks = data.nearby_parks;
+      nearbyParks = data.nearby_parks ?? [];
+      hasPlanned = true;
+      updateNearbyLayer();
 
       if (map.getSource('route')) {
         (map.getSource('route') as maplibregl.GeoJSONSource).setData(data.path);
       } else {
         map.addSource('route', { type: 'geojson', data: data.path });
-        map.addLayer({
-          id: 'route-line',
-          type: 'line',
-          source: 'route',
-          paint: {
-            'line-color': '#e8823c',
-            'line-width': 4,
+        map.addLayer(
+          {
+            id: 'route-line',
+            type: 'line',
+            source: 'route',
+            paint: {
+              'line-color': '#e8823c',
+              'line-width': 4,
+            },
           },
-        });
+          map.getLayer('nearby-parks-circles') ? 'nearby-parks-circles' : undefined
+        );
       }
 
       const coords = data.path.coordinates;
@@ -102,7 +152,7 @@
         (b: maplibregl.LngLatBounds, coord: [number, number]) => b.extend(coord),
         new maplibregl.LngLatBounds(coords[0], coords[0])
       );
-      map.fitBounds(bounds, { padding: 60 });
+      map.fitBounds(bounds, { padding: { top: 60, bottom: 60, left: 400, right: 60 } });
 
     } catch (e: any) {
       routeError = e.message;
@@ -115,13 +165,28 @@
     map.on('click', 'park-points', (e) => {
       const feature = e.features?.[0];
       if (!feature) return;
-      selectedPark = feature.properties as any;
+      const props = feature.properties as any;
+      openPark(props.code);
+      if (!selectedPark) selectedPark = props;
       const coords = (feature.geometry as any).coordinates.slice();
       map.flyTo({ center: coords, zoom: Math.max(map.getZoom(), 6), duration: 600 });
     });
 
     map.on('mouseenter', 'park-points', () => (map.getCanvas().style.cursor = 'pointer'));
     map.on('mouseleave', 'park-points', () => (map.getCanvas().style.cursor = ''));
+  }
+
+  function attachNearbyHandlers() {
+    map.on('click', 'nearby-parks-circles', (e) => {
+      const feature = e.features?.[0];
+      if (!feature) return;
+      const props = feature.properties as any;
+      const match = nearbyParks.find((p) => p.code === props.code);
+      if (match) selectNearbyPark(match);
+    });
+
+    map.on('mouseenter', 'nearby-parks-circles', () => (map.getCanvas().style.cursor = 'pointer'));
+    map.on('mouseleave', 'nearby-parks-circles', () => (map.getCanvas().style.cursor = ''));
   }
 
   function attachBoundaryHandlers() {
@@ -155,6 +220,10 @@
         // 1. Points only: this is all the first view needs.
         const pointsGeojson = await pointsPromise;
 
+        parkProps = Object.fromEntries(
+          pointsGeojson.features.map((f: any) => [f.properties.code, f.properties as Park])
+        );
+
         map.addSource('parks', { type: 'geojson', data: pointsGeojson });
         map.addLayer({
           id: 'park-points',
@@ -168,8 +237,28 @@
             'circle-stroke-color': '#ffffff',
           },
         });
+
+        // Nearby-parks highlight layer: visible at every zoom, drawn on top.
+        map.addSource('nearby-parks', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+        });
+        map.addLayer({
+          id: 'nearby-parks-circles',
+          type: 'circle',
+          source: 'nearby-parks',
+          paint: {
+            'circle-radius': 9,
+            'circle-color': '#1f4d3a',
+            'circle-stroke-width': 3,
+            'circle-stroke-color': '#ffffff',
+          },
+        });
+        updateNearbyLayer(); // in case a route finished before the map did
+
         attachPointHandlers();
-        isLoading = false; // show the map now
+        attachNearbyHandlers();
+        isLoading = false;
 
         // 2. Boundaries arrive in the background.
         const boundariesGeojson = await boundariesPromise;
@@ -181,12 +270,9 @@
             type: 'fill',
             source: 'park-boundaries',
             minzoom: 6,
-            paint: {
-              'fill-color': '#a8d5a8',
-              'fill-opacity': 0.35,
-            },
+            paint: { 'fill-color': '#a8d5a8', 'fill-opacity': 0.35 },
           },
-          'park-points' // insert beneath the points layer
+          'park-points'
         );
         map.addLayer(
           {
@@ -194,17 +280,14 @@
             type: 'line',
             source: 'park-boundaries',
             minzoom: 6,
-            paint: {
-              'line-color': '#4a9d4a',
-              'line-width': 2,
-            },
+            paint: { 'line-color': '#4a9d4a', 'line-width': 2 },
           },
           'park-points'
         );
         attachBoundaryHandlers();
       } catch (e) {
         console.error('Failed to load parks', e);
-        isLoading = false; // don't leave the user on an infinite spinner
+        isLoading = false;
       }
     });
   });
@@ -286,9 +369,39 @@
       {#if routeError}
         <div class="error-message">{routeError}</div>
       {/if}
+
       <button class="plan-btn" on:click={planRoute} disabled={isPlanning}>
         {isPlanning ? 'Planning...' : 'Plan route'}
       </button>
+
+      {#if hasPlanned}
+        <div class="results">
+          <h3>
+            Parks along your route
+            <span class="count">{nearbyParks.length}</span>
+          </h3>
+
+          {#if nearbyParks.length === 0}
+            <p class="empty">No parks found within 25 miles of this route.</p>
+          {:else}
+            <ul class="park-list">
+              {#each nearbyParks as park (park.id)}
+                <li>
+                  <button class="park-row" on:click={() => selectNearbyPark(park)}>
+                    <span class="park-name">{park.name}</span>
+                    <span class="park-meta">
+                      <span class="state-tag small">{park.state}</span>
+                      <span class="distance">
+                        {park.distance_is_approximate ? '~' : ''}{park.distance_miles} mi away
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
     {/if}
   </div>
 
@@ -417,7 +530,6 @@
   }
 
   .plan-btn {
-    margin-top: auto;
     background: #1f4d3a;
     color: #fff;
     border: none;
@@ -430,6 +542,87 @@
 
   .plan-btn:hover {
     background: #163a2b;
+  }
+
+  .results {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-top: 1px solid #ebe7dd;
+    padding-top: 14px;
+  }
+
+  .results h3 {
+    margin: 0;
+    font-size: 0.95rem;
+    color: #1f4d3a;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .count {
+    background: #1f4d3a;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 10px;
+  }
+
+  .empty {
+    color: #7a7568;
+  }
+
+  .park-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .park-row {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    text-align: left;
+    background: #faf8f3;
+    border: 1px solid #ebe7dd;
+    border-radius: 10px;
+    padding: 10px 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .park-row:hover {
+    background: #f4f1ea;
+    border-color: #1f4d3a;
+  }
+
+  .park-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #2a2a28;
+  }
+
+  .park-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .state-tag.small {
+    font-size: 0.65rem;
+    padding: 2px 6px;
+  }
+
+  .distance {
+    font-size: 0.8rem;
+    color: #7a7568;
   }
 
   .back-btn {
