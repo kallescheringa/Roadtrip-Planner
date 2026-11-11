@@ -3,30 +3,110 @@
   import maplibregl from 'maplibre-gl';
   import 'maplibre-gl/dist/maplibre-gl.css';
   import { push } from 'svelte-spa-router';
-  import { currentUser, logout } from '../lib/auth';
+  import { currentUser, logout, accessToken } from '../lib/auth';
+  import { get } from 'svelte/store';
+  import { dndzone } from 'svelte-dnd-action';
 
   let mapContainer: HTMLDivElement;
   let map: maplibregl.Map;
   let selectedPark: { name: string; state: string; code: string; description: string } | null = null;
   let isLoading = true;
 
-  // Route builder state
-  let startLocation = '';
-  let stops: string[] = [];
-  let endLocation = '';
+  const generateId = () => Math.random().toString(36).substring(2, 9);
+
+  let routePoints: Array<{ id: string; value: string }> = [
+    { id: generateId(), value: '' },
+    { id: generateId(), value: '' }
+  ];
   let cyclic = false;
 
   function addStop() {
-    stops = [...stops, ''];
+    const newStop = { id: generateId(), value: '' };
+    if (routePoints.length >= 2) {
+      routePoints = [
+        ...routePoints.slice(0, -1),
+        newStop,
+        routePoints[routePoints.length - 1]
+      ];
+    } else {
+      routePoints = [...routePoints, newStop];
+    }
   }
 
-  function removeStop(index: number) {
-    stops = stops.filter((_, i) => i !== index);
+  function removeStop(id: string) {
+    if (routePoints.length > 2) {
+      routePoints = routePoints.filter(p => p.id !== id);
+    }
   }
 
-  function planRoute() {
-    console.log('Route:', { startLocation, stops, endLocation, cyclic });
-    // TODO: send to backend -> OSRM -> draw path on map
+  let routeGeojson: any = null;
+  let nearbyParks: any[] = [];
+  let isPlanning = false;
+  let routeError = '';
+
+  function handleDnd(event: any) {
+    routePoints = event.detail.items;
+  }
+
+  async function planRoute() {
+    routeError = '';
+    isPlanning = true;
+
+    const startLocation = routePoints[0]?.value || '';
+    const endLocation = routePoints[routePoints.length - 1]?.value || '';
+    const stops = routePoints.slice(1, -1).map(s => s.value).filter(val => val.trim());
+
+    try {
+      const token = get(accessToken);
+      const res = await fetch('http://localhost:8000/api/routes/plan/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          start: startLocation,
+          stops,
+          end: endLocation,
+          cyclic,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Failed to plan route');
+      }
+
+      const data = await res.json();
+      nearbyParks = data.nearby_parks;
+
+      if (map.getSource('route')) {
+        (map.getSource('route') as maplibregl.GeoJSONSource).setData(data.path);
+      } else {
+        map.addSource('route', { type: 'geojson', data: data.path });
+        map.addLayer({
+          id: 'route-line',
+          type: 'line',
+          source: 'route',
+          paint: {
+            'line-color': '#e8823c',
+            'line-width': 4,
+          },
+        });
+      }
+
+      const coords = data.path.coordinates;
+      const bounds = coords.reduce(
+        (b: maplibregl.LngLatBounds, coord: [number, number]) => b.extend(coord),
+        new maplibregl.LngLatBounds(coords[0], coords[0])
+      );
+      map.fitBounds(bounds, { padding: 60 });
+
+    } catch (e: any) {
+      routeError = e.message;
+    } finally {
+      isPlanning = false;
+    }
   }
 
   onMount(async () => {
@@ -48,20 +128,6 @@
       ]);
       const pointsGeojson = await pointsRes.json();
       const boundariesGeojson = await boundariesRes.json();
-      // const statesGeojson = await statesRes.json();
-
-      // // State/province borders — add first so everything else renders on top
-      // map.addSource('states', { type: 'geojson', data: statesGeojson });
-
-      // map.addLayer({
-      //   id: 'state-borders',
-      //   type: 'line',
-      //   source: 'states',
-      //   paint: {
-      //     'line-color': '#666666',
-      //     'line-width': 1,
-      //   },
-      // });
 
       map.addSource('park-boundaries', { type: 'geojson', data: boundariesGeojson });
 
@@ -71,8 +137,8 @@
         source: 'park-boundaries',
         minzoom: 6,
         paint: {
-          'fill-color': '#a8d5a8',  // lighter, brighter green
-          'fill-opacity': 0.35,      // slightly more opaque
+          'fill-color': '#a8d5a8',
+          'fill-opacity': 0.35,
         },
       });
 
@@ -82,8 +148,8 @@
         source: 'park-boundaries',
         minzoom: 6,
         paint: {
-          'line-color': '#4a9d4a',   // darker, saturated green
-          'line-width': 2,           // slightly thicker
+          'line-color': '#4a9d4a',
+          'line-width': 2,
         },
       });
 
@@ -149,43 +215,62 @@
 
   <div class="side-panel">
     {#if selectedPark}
-      <!-- Park overlay -->
       <button class="back-btn" on:click={closePark}>&larr; Back to route</button>
       <h2>{selectedPark.name}</h2>
       <span class="state-tag">{selectedPark.state}</span>
       <p>{selectedPark.description}</p>
     {:else}
-      <!-- Route builder -->
       <h2>Plan your route</h2>
 
-      <label>
-        Start
-        <input type="text" placeholder="e.g. Denver, CO" bind:value={startLocation} />
-      </label>
+      <div
+        class="stops-container"
+        use:dndzone={{
+            items: routePoints,
+            flipDurationMs: 200
+        }}
+        on:consider={handleDnd}
+        on:finalize={handleDnd}
+      >
+        {#each routePoints as point, i (point.id)}
+          <div class="stop-item">
+            <span class="drag-handle">
+              {#if i === 0}
+                Start
+              {:else if i === routePoints.length - 1}
+                End
+              {:else}
+                {i}
+              {/if}
+            </span>
 
-      {#each stops as stop, i}
-        <label>
-          Stop {i + 1}
-          <div class="stop-row">
-            <input type="text" placeholder="e.g. Moab, UT" bind:value={stops[i]} />
-            <button class="remove-btn" on:click={() => removeStop(i)} aria-label="Remove stop">×</button>
+            <input
+              type="text"
+              bind:value={point.value}
+              placeholder={i === 0 ? "e.g. Denver, CO" : i === routePoints.length - 1 ? "e.g. Salt Lake City, UT" : "Stop"}
+            />
+
+            {#if i > 0 && i < routePoints.length - 1}
+              <button class="remove-btn" on:click={() => removeStop(point.id)}>×</button>
+            {:else}
+              <div class="remove-placeholder"></div>
+            {/if}
           </div>
-        </label>
-      {/each}
+        {/each}
+      </div>
 
       <button class="add-stop-btn" on:click={addStop}>+ Add stop</button>
-
-      <label>
-        End
-        <input type="text" placeholder="e.g. Salt Lake City, UT" bind:value={endLocation} />
-      </label>
 
       <label class="checkbox-row">
         <input type="checkbox" bind:checked={cyclic} />
         Return to start
       </label>
 
-      <button class="plan-btn" on:click={planRoute}>Plan route</button>
+      {#if routeError}
+        <div class="error-message">{routeError}</div>
+      {/if}
+      <button class="plan-btn" on:click={planRoute} disabled={isPlanning}>
+        {isPlanning ? 'Planning...' : 'Plan route'}
+      </button>
     {/if}
   </div>
 
@@ -216,7 +301,7 @@
     top: 16px;
     left: 16px;
     bottom: 16px;
-    width: 320px;
+    width: 340px;
     background: #fff;
     border-radius: 14px;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
@@ -235,18 +320,15 @@
     color: #1f4d3a;
   }
 
-  label {
+  .stops-container {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #7a7568;
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
+    gap: 8px;
+    outline: none;
   }
 
   input[type='text'] {
+    flex: 1;
     font-family: inherit;
     font-size: 0.95rem;
     font-weight: 400;
@@ -256,6 +338,7 @@
     padding: 8px 10px;
     border: 1px solid #e5e4e7;
     border-radius: 8px;
+    min-width: 0;
   }
 
   input[type='text']:focus {
@@ -263,27 +346,26 @@
     border-color: #1f4d3a;
   }
 
-  .stop-row {
-    display: flex;
-    gap: 6px;
-  }
-
-  .stop-row input {
-    flex: 1;
-  }
-
   .remove-btn {
     background: #f4f1ea;
     border: none;
     border-radius: 8px;
     width: 32px;
+    height: 34px;
     color: #7a7568;
     font-size: 1.1rem;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .remove-btn:hover {
     background: #ebe7dd;
+  }
+
+  .remove-placeholder {
+    width: 32px;
   }
 
   .add-stop-btn {
@@ -298,12 +380,14 @@
   }
 
   .checkbox-row {
+    display: flex;
     flex-direction: row;
     align-items: center;
     gap: 8px;
     text-transform: none;
     font-weight: 500;
     color: #3a3833;
+    font-size: 0.85rem;
   }
 
   .plan-btn {
@@ -439,5 +523,25 @@
     margin-top: 16px;
     color: #7a7568;
     font-family: system-ui;
+  }
+
+  .drag-handle {
+    cursor: grab;
+    user-select: none;
+    padding: 6px 10px;
+    color: #1f4d3a;
+    background: #f4f1ea;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    min-width: 48px;
+    text-align: center;
+    box-sizing: border-box;
+  }
+
+  .stop-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 </style>
