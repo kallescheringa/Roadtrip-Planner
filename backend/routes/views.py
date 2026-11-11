@@ -8,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from attractions.services.nearby_parks import find_nearby_parks
 from attractions.models import NationalPark
 from routing_engine.geocoding import geocode
 from routing_engine.osrm_client import get_route
@@ -74,25 +75,8 @@ class PlanRouteView(APIView):
         for i, coords in enumerate(stop_coords):
             RouteStop.objects.create(route=route, location=Point(*coords), order=i)
 
-        # Find nearby parks (within 25 miles of the route path)
-        nearby_parks = NationalPark.objects.filter(
-            location__dwithin=(path_geom, D(mi=25))
-        ).annotate(
-            distance=Distance('location', path_geom)
-        ).order_by('distance')
-
-        parks_data = [
-            {
-                'id': p.id,
-                'name': p.name,
-                'code': p.code,
-                'state': p.state,
-                'distance_miles': round(p.distance.mi, 1),
-                'lat': p.location.y,
-                'lon': p.location.x,
-            }
-            for p in nearby_parks
-        ]
+        # Find nearby parks using their actual boundaries
+        parks_data = find_nearby_parks(path_geom)
 
         return Response({
             'route_id': route.id,

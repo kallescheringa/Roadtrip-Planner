@@ -7,6 +7,8 @@
   import { get } from 'svelte/store';
   import { dndzone } from 'svelte-dnd-action';
 
+  const API = 'http://localhost:8000';
+
   let mapContainer: HTMLDivElement;
   let map: maplibregl.Map;
   let selectedPark: { name: string; state: string; code: string; description: string } | null = null;
@@ -58,7 +60,7 @@
 
     try {
       const token = get(accessToken);
-      const res = await fetch('http://localhost:8000/api/routes/plan/', {
+      const res = await fetch(`${API}/api/routes/plan/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -109,7 +111,31 @@
     }
   }
 
-  onMount(async () => {
+  function attachPointHandlers() {
+    map.on('click', 'park-points', (e) => {
+      const feature = e.features?.[0];
+      if (!feature) return;
+      selectedPark = feature.properties as any;
+      const coords = (feature.geometry as any).coordinates.slice();
+      map.flyTo({ center: coords, zoom: Math.max(map.getZoom(), 6), duration: 600 });
+    });
+
+    map.on('mouseenter', 'park-points', () => (map.getCanvas().style.cursor = 'pointer'));
+    map.on('mouseleave', 'park-points', () => (map.getCanvas().style.cursor = ''));
+  }
+
+  function attachBoundaryHandlers() {
+    map.on('click', 'park-boundaries-fill', (e) => {
+      const feature = e.features?.[0];
+      if (!feature) return;
+      selectedPark = feature.properties as any;
+    });
+
+    map.on('mouseenter', 'park-boundaries-fill', () => (map.getCanvas().style.cursor = 'pointer'));
+    map.on('mouseleave', 'park-boundaries-fill', () => (map.getCanvas().style.cursor = ''));
+  }
+
+  onMount(() => {
     map = new maplibregl.Map({
       container: mapContainer,
       style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
@@ -120,77 +146,69 @@
 
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
 
+    // Start fetching immediately, in parallel with the basemap style.
+    const pointsPromise = fetch(`${API}/api/attractions/parks/`).then((r) => r.json());
+    const boundariesPromise = fetch(`${API}/api/attractions/parks/boundaries/`).then((r) => r.json());
+
     map.on('load', async () => {
-      const [pointsRes, boundariesRes, statesRes] = await Promise.all([
-        fetch('http://localhost:8000/api/attractions/parks/'),
-        fetch('http://localhost:8000/api/attractions/parks/boundaries/'),
-        fetch('https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_1_states_provinces.geojson'),
-      ]);
-      const pointsGeojson = await pointsRes.json();
-      const boundariesGeojson = await boundariesRes.json();
+      try {
+        // 1. Points only: this is all the first view needs.
+        const pointsGeojson = await pointsPromise;
 
-      map.addSource('park-boundaries', { type: 'geojson', data: boundariesGeojson });
+        map.addSource('parks', { type: 'geojson', data: pointsGeojson });
+        map.addLayer({
+          id: 'park-points',
+          type: 'circle',
+          source: 'parks',
+          maxzoom: 6,
+          paint: {
+            'circle-radius': 7,
+            'circle-color': '#e8823c',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#ffffff',
+          },
+        });
+        attachPointHandlers();
+        isLoading = false; // show the map now
 
-      map.addLayer({
-        id: 'park-boundaries-fill',
-        type: 'fill',
-        source: 'park-boundaries',
-        minzoom: 6,
-        paint: {
-          'fill-color': '#a8d5a8',
-          'fill-opacity': 0.35,
-        },
-      });
+        // 2. Boundaries arrive in the background.
+        const boundariesGeojson = await boundariesPromise;
 
-      map.addLayer({
-        id: 'park-boundaries-outline',
-        type: 'line',
-        source: 'park-boundaries',
-        minzoom: 6,
-        paint: {
-          'line-color': '#4a9d4a',
-          'line-width': 2,
-        },
-      });
-
-      map.addSource('parks', { type: 'geojson', data: pointsGeojson });
-
-      map.addLayer({
-        id: 'park-points',
-        type: 'circle',
-        source: 'parks',
-        maxzoom: 6,
-        paint: {
-          'circle-radius': 7,
-          'circle-color': '#e8823c',
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff',
-        },
-      });
-
-      map.on('click', 'park-points', (e) => {
-        const feature = e.features?.[0];
-        if (!feature) return;
-        selectedPark = feature.properties as any;
-        const coords = (feature.geometry as any).coordinates.slice();
-        map.flyTo({ center: coords, zoom: Math.max(map.getZoom(), 6), duration: 600 });
-      });
-
-      map.on('click', 'park-boundaries-fill', (e) => {
-        const feature = e.features?.[0];
-        if (!feature) return;
-        selectedPark = feature.properties as any;
-      });
-
-      map.on('mouseenter', 'park-points', () => (map.getCanvas().style.cursor = 'pointer'));
-      map.on('mouseleave', 'park-points', () => (map.getCanvas().style.cursor = ''));
-      map.on('mouseenter', 'park-boundaries-fill', () => (map.getCanvas().style.cursor = 'pointer'));
-      map.on('mouseleave', 'park-boundaries-fill', () => (map.getCanvas().style.cursor = ''));
-
-      isLoading = false;
+        map.addSource('park-boundaries', { type: 'geojson', data: boundariesGeojson });
+        map.addLayer(
+          {
+            id: 'park-boundaries-fill',
+            type: 'fill',
+            source: 'park-boundaries',
+            minzoom: 6,
+            paint: {
+              'fill-color': '#a8d5a8',
+              'fill-opacity': 0.35,
+            },
+          },
+          'park-points' // insert beneath the points layer
+        );
+        map.addLayer(
+          {
+            id: 'park-boundaries-outline',
+            type: 'line',
+            source: 'park-boundaries',
+            minzoom: 6,
+            paint: {
+              'line-color': '#4a9d4a',
+              'line-width': 2,
+            },
+          },
+          'park-points'
+        );
+        attachBoundaryHandlers();
+      } catch (e) {
+        console.error('Failed to load parks', e);
+        isLoading = false; // don't leave the user on an infinite spinner
+      }
     });
   });
-  
+
   onDestroy(() => map?.remove());
 
   function handleLogout() {
@@ -387,6 +405,14 @@
     text-transform: none;
     font-weight: 500;
     color: #3a3833;
+    font-size: 0.85rem;
+  }
+
+  .error-message {
+    background: #fde8e8;
+    color: #c32f2f;
+    padding: 10px 12px;
+    border-radius: 8px;
     font-size: 0.85rem;
   }
 
